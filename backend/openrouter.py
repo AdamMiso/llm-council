@@ -28,16 +28,58 @@ async def query_model(
 
     # Check if this model has a specific configuration
     if model in MODEL_CONFIGS:
-        api_key = MODEL_CONFIGS[model]["api_key"]
-        api_url = MODEL_CONFIGS[model]["api_url"]
-        
+        specific_config = MODEL_CONFIGS[model]
+        # Only attempt specific config if API key is present
+        if specific_config.get("api_key"):
+            try:
+                # Use specific configuration
+                specific_api_key = specific_config["api_key"]
+                specific_api_url = specific_config["api_url"]
+                # Use provider specific model ID if available, otherwise use default
+                specific_model_id = specific_config.get("provider_model_id", model)
+                
+                headers = {
+                    "Authorization": f"Bearer {specific_api_key}",
+                    "Content-Type": "application/json",
+                }
+
+                payload = {
+                    "model": specific_model_id,
+                    "messages": messages,
+                }
+
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        specific_api_url,
+                        headers=headers,
+                        json=payload
+                    )
+                    response.raise_for_status()
+
+                    data = response.json()
+                    message = data['choices'][0]['message']
+
+                    return {
+                        'content': message.get('content'),
+                        'reasoning_details': message.get('reasoning_details')
+                    }
+            except Exception as e:
+                print(f"Error querying model {model} via direct API: {e}. Falling back to OpenRouter.")
+                # Fallback to OpenRouter (continue below)
+        else:
+            # Config exists but no key provided, just use OpenRouter
+            pass
+
+    # Default / Fallback to OpenRouter
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:5173", # Optional OpenRouter headers
+        "X-Title": "LLM Council",
     }
 
     payload = {
-        "model": model, # Currently we use the same model ID, but this could be mapped if needed
+        "model": model, 
         "messages": messages,
     }
 
@@ -59,7 +101,7 @@ async def query_model(
             }
 
     except Exception as e:
-        print(f"Error querying model {model}: {e}")
+        print(f"Error querying model {model} via OpenRouter: {e}")
         return None
 
 
