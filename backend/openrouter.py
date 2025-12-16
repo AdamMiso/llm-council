@@ -2,7 +2,7 @@
 
 import httpx
 from typing import List, Dict, Any, Optional
-from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
+from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL, MODEL_CONFIGS
 
 
 async def query_model(
@@ -21,20 +21,30 @@ async def query_model(
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
     """
+    # Determine which API configuration to use
+    api_key = OPENROUTER_API_KEY
+    api_url = OPENROUTER_API_URL
+    model_id = model
+
+    # Check if this model has a specific configuration
+    if model in MODEL_CONFIGS:
+        api_key = MODEL_CONFIGS[model]["api_key"]
+        api_url = MODEL_CONFIGS[model]["api_url"]
+        
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
     payload = {
-        "model": model,
+        "model": model, # Currently we use the same model ID, but this could be mapped if needed
         "messages": messages,
     }
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                OPENROUTER_API_URL,
+                api_url,
                 headers=headers,
                 json=payload
             )
