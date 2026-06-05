@@ -1,7 +1,4 @@
-
 import asyncio
-import os
-import sys
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -13,10 +10,17 @@ import backend.config as config
 async def test_connectivity():
     print("Testing real API connectivity...\n")
     
-    # Test 1: OpenRouter (using gemini-2.5-flash as it's cheap/fast)
-    print("1. Testing OpenRouter (google/gemini-2.5-flash)...")
+    # Test 1: OpenRouter (using a fast configured model when possible)
+    fast_model = next(
+        (
+            model for model in config.COUNCIL_MODELS
+            if any(token in model for token in ("flash", "mini", "nano", "haiku", "fast"))
+        ),
+        config.COUNCIL_MODELS[0],
+    )
+    print(f"1. Testing OpenRouter ({fast_model})...")
     try:
-        response = await query_model("google/gemini-2.5-flash", [{"role": "user", "content": "Say 'OpenRouter OK'"}], timeout=30.0)
+        response = await query_model(fast_model, [{"role": "user", "content": "Say 'OpenRouter OK'"}], timeout=30.0)
         if response and response.get('content'):
             print(f"✅ OpenRouter Success: {response['content'][:50]}...")
         else:
@@ -25,19 +29,11 @@ async def test_connectivity():
     except Exception as e:
         print(f"❌ OpenRouter Error: {e}")
 
-    # Test 2: x.ai (using the configured Grok model)
-    grok_model = "grok-4-1-fast-reasoning"
-    print(f"\n2. Testing x.ai ({grok_model})...")
-    
-    try:
-        response = await query_model(grok_model, [{"role": "user", "content": "Say 'Grok OK'"}], timeout=30.0)
-        if response and response.get('content'):
-            print(f"✅ x.ai Success: {response['content'][:50]}...")
-        else:
-            print(f"❌ x.ai Failed: No response")
-            print(f"Response object: {response}")
-    except Exception as e:
-        print(f"❌ x.ai Error: {e}")
+    # Test 2: Current configured council slate
+    print("\n2. Configured council models:")
+    for model in config.COUNCIL_MODELS:
+        print(f"   - {model}")
+    print(f"\nChairman: {config.CHAIRMAN_MODEL}")
 
 if __name__ == "__main__":
     asyncio.run(test_connectivity())

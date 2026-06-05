@@ -4,6 +4,30 @@
 
 const API_BASE = 'http://localhost:8001';
 
+function parseSseEvents(buffer, onEvent) {
+  const events = buffer.split('\n\n');
+  const remainder = events.pop() || '';
+
+  for (const rawEvent of events) {
+    const data = rawEvent
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => line.slice(6))
+      .join('\n');
+
+    if (!data) continue;
+
+    try {
+      const event = JSON.parse(data);
+      onEvent(event.type, event);
+    } catch (e) {
+      console.error('Failed to parse SSE event:', e);
+    }
+  }
+
+  return remainder;
+}
+
 export const api = {
   /**
    * List all conversations.
@@ -91,25 +115,20 @@ export const api = {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          try {
-            const event = JSON.parse(data);
-            onEvent(event.type, event);
-          } catch (e) {
-            console.error('Failed to parse SSE event:', e);
-          }
+      if (done) {
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          parseSseEvents(`${buffer}\n\n`, onEvent);
         }
+        break;
       }
+
+      buffer += decoder.decode(value, { stream: true });
+      buffer = parseSseEvents(buffer, onEvent);
     }
   },
 };

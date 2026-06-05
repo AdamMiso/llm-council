@@ -2,6 +2,10 @@ import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './Stage2.css';
 
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function deAnonymizeText(text, labelToModel) {
   if (!labelToModel) return text;
 
@@ -9,7 +13,7 @@ function deAnonymizeText(text, labelToModel) {
   // Replace each "Response X" with the actual model name
   Object.entries(labelToModel).forEach(([label, model]) => {
     const modelShortName = model.split('/')[1] || model;
-    result = result.replace(new RegExp(label, 'g'), `**${modelShortName}**`);
+    result = result.replace(new RegExp(escapeRegExp(label), 'g'), `**${modelShortName}**`);
   });
   return result;
 }
@@ -74,7 +78,7 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
         <div className="aggregate-rankings">
           <h4>Aggregate Rankings (Street Cred)</h4>
           <p className="stage-description">
-            Combined results across all peer evaluations (lower score is better):
+            Combined peer-only results across all evaluations (lower score is better):
           </p>
           <div className="aggregate-list">
             {aggregateRankings.map((agg, index) => (

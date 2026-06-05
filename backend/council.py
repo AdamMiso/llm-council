@@ -1,5 +1,6 @@
 """3-stage LLM Council orchestration."""
 
+import asyncio
 from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
@@ -55,28 +56,44 @@ async def stage2_collect_rankings(
         for label, result in zip(labels, stage1_results)
     }
 
-    # Build the ranking prompt
-    responses_text = "\n\n".join([
-        f"Response {label}:\n{result['response']}"
-        for label, result in zip(labels, stage1_results)
-    ])
+    async def rank_as_peer(evaluator_model: str) -> Dict[str, Any] | None:
+        peer_responses = [
+            (label, result)
+            for label, result in zip(labels, stage1_results)
+            if result["model"] != evaluator_model
+        ]
 
-    ranking_prompt = f"""You are evaluating different responses to the following question:
+        if not peer_responses:
+            return None
+
+        responses_text = "\n\n".join([
+            f"Response {label}:\n{result['response']}"
+            for label, result in peer_responses
+        ])
+
+        allowed_labels = ", ".join([f"Response {label}" for label, _ in peer_responses])
+        example_ranking = "\n".join([
+            f"{position}. Response {label}"
+            for position, (label, _) in enumerate(reversed(peer_responses), start=1)
+        ])
+
+        ranking_prompt = f"""You are evaluating peer responses to the following question:
 
 Question: {user_query}
 
-Here are the responses from different models (anonymized):
+Here are the peer responses from other models (anonymized):
 
 {responses_text}
 
 Your task:
 1. First, evaluate each response individually. For each response, explain what it does well and what it does poorly.
-2. Then, at the very end of your response, provide a final ranking.
+2. Then, at the very end of your response, provide a final ranking of only these labels: {allowed_labels}.
 
 IMPORTANT: Your final ranking MUST be formatted EXACTLY as follows:
 - Start with the line "FINAL RANKING:" (all caps, with colon)
 - Then list the responses from best to worst as a numbered list
 - Each line should be: number, period, space, then ONLY the response label (e.g., "1. Response A")
+- Include every listed peer response exactly once
 - Do not add any other text or explanations in the ranking section
 
 Example of the correct format for your ENTIRE response:
@@ -86,28 +103,42 @@ Response B is accurate but lacks depth on Z...
 Response C offers the most comprehensive answer...
 
 FINAL RANKING:
-1. Response C
-2. Response A
-3. Response B
+{example_ranking}
 
 Now provide your evaluation and ranking:"""
 
-    messages = [{"role": "user", "content": ranking_prompt}]
-
-    # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
-
-    # Format results
-    stage2_results = []
-    for model, response in responses.items():
+        response = await query_model(
+            evaluator_model,
+            [{"role": "user", "content": ranking_prompt}],
+        )
         if response is not None:
             full_text = response.get('content', '')
-            parsed = parse_ranking_from_text(full_text)
-            stage2_results.append({
-                "model": model,
+            allowed_label_set = {f"Response {label}" for label, _ in peer_responses}
+            parsed = []
+            for label in parse_ranking_from_text(full_text):
+                if label in allowed_label_set and label not in parsed:
+                    parsed.append(label)
+            parsed.extend([
+                f"Response {label}" for label, _ in peer_responses
+                if f"Response {label}" not in parsed
+            ])
+            return {
+                "model": evaluator_model,
                 "ranking": full_text,
                 "parsed_ranking": parsed
-            })
+            }
+        return None
+
+    # Get peer rankings from all successful Stage 1 models in parallel.
+    evaluator_models = [result["model"] for result in stage1_results]
+    responses = await asyncio.gather(*[
+        rank_as_peer(model) for model in evaluator_models
+    ])
+
+    stage2_results = [
+        response for response in responses
+        if response is not None
+    ]
 
     return stage2_results, label_to_model
 
@@ -151,7 +182,7 @@ STAGE 2 - Peer Rankings:
 
 Your task as Chairman is to synthesize all of this information into a single, comprehensive, accurate answer to the user's original question. Consider:
 - The individual responses and their insights
-- The peer rankings and what they reveal about response quality
+- The peer rankings and what they reveal about response quality. Models did not rank their own answers.
 - Any patterns of agreement or disagreement
 
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
@@ -226,9 +257,11 @@ def calculate_aggregate_rankings(
 
     # Track positions for each model
     model_positions = defaultdict(list)
+    voters_seen = defaultdict(set)
 
     for ranking in stage2_results:
         ranking_text = ranking['ranking']
+        voter = ranking.get('model')
 
         # Parse the ranking from the structured format
         parsed_ranking = parse_ranking_from_text(ranking_text)
@@ -237,6 +270,8 @@ def calculate_aggregate_rankings(
             if label in label_to_model:
                 model_name = label_to_model[label]
                 model_positions[model_name].append(position)
+                if voter:
+                    voters_seen[model_name].add(voter)
 
     # Calculate average position for each model
     aggregate = []
@@ -246,7 +281,8 @@ def calculate_aggregate_rankings(
             aggregate.append({
                 "model": model,
                 "average_rank": round(avg_rank, 2),
-                "rankings_count": len(positions)
+                "rankings_count": len(positions),
+                "voters": sorted(voters_seen[model])
             })
 
     # Sort by average rank (lower is better)
@@ -274,8 +310,15 @@ Title:"""
 
     messages = [{"role": "user", "content": title_prompt}]
 
-    # Use gemini-2.5-flash for title generation (fast and cheap)
-    response = await query_model("google/gemini-2.5-flash", messages, timeout=30.0)
+    # Use the fastest currently configured council member for title generation.
+    title_model = next(
+        (
+            model for model in COUNCIL_MODELS
+            if any(token in model for token in ("flash", "mini", "nano", "haiku", "fast"))
+        ),
+        COUNCIL_MODELS[0],
+    )
+    response = await query_model(title_model, messages, timeout=30.0)
 
     if response is None:
         # Fallback to a generic title

@@ -1,4 +1,4 @@
-# CLAUDE.md - Technical Notes for LLM Council
+# AGENTS.md - Technical Notes for LLM Council
 
 This file contains technical details, architectural decisions, and important implementation notes for future development sessions.
 
@@ -11,8 +11,8 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 ### Backend Structure (`backend/`)
 
 **`config.py`**
-- Contains `MODEL_PRESETS` plus resolved `COUNCIL_MODELS` (OpenRouter model identifiers)
-- Supports `COUNCIL_PRESET`, `COUNCIL_MODELS`, and `CHAIRMAN_MODEL` env overrides
+- Contains `COUNCIL_MODELS` (list of OpenRouter model identifiers)
+- Contains `CHAIRMAN_MODEL` (model that synthesizes final answer)
 - Uses environment variable `OPENROUTER_API_KEY` from `.env`
 - Backend runs on **port 8001** (NOT 8000 - user had another app on 8000)
 
@@ -27,8 +27,7 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 - `stage2_collect_rankings()`:
   - Anonymizes responses as "Response A, B, C, etc."
   - Creates `label_to_model` mapping for de-anonymization
-  - Prompts models to evaluate and rank peer responses only (no self-ranking)
-  - Normalizes parsed rankings to include each peer label once
+  - Prompts models to evaluate and rank (with strict format requirements)
   - Returns tuple: (rankings_list, label_to_model_dict)
   - Each ranking includes both raw text and `parsed_ranking` list
 - `stage3_synthesize_final()`: Chairman synthesizes from all responses + rankings
@@ -38,8 +37,8 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 **`storage.py`**
 - JSON-based conversation storage in `data/conversations/`
 - Each conversation: `{id, created_at, messages[]}`
-- Assistant messages contain: `{role, stage1, stage2, stage3, metadata}`
-- Metadata (`label_to_model`, `aggregate_rankings`) is persisted so reloaded conversations can still de-anonymize Stage 2
+- Assistant messages contain: `{role, stage1, stage2, stage3}`
+- Note: metadata (label_to_model, aggregate_rankings) is NOT persisted to storage, only returned via API
 
 **`main.py`**
 - FastAPI app with CORS enabled for localhost:5173 and localhost:3000
@@ -51,7 +50,7 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 **`App.jsx`**
 - Main orchestration: manages conversations list and current conversation
 - Handles message sending and metadata storage
-- Streaming updates patch the active assistant message immutably
+- Important: metadata is stored in the UI state for display but not persisted to backend JSON
 
 **`components/ChatInterface.jsx`**
 - Multiline textarea (3 rows, resizable)
@@ -97,7 +96,6 @@ This strict format allows reliable parsing while still getting thoughtful evalua
 - Backend creates mapping: `{"Response A": "openai/gpt-5.1", ...}`
 - Frontend displays model names in **bold** for readability
 - Users see explanation that original evaluation used anonymous labels
-- Each evaluator ranks only peer responses, not its own response
 - This prevents bias while maintaining transparency
 
 ### Error Handling Philosophy
@@ -125,14 +123,14 @@ All backend modules use relative imports (e.g., `from .config import ...`) not a
 All ReactMarkdown components must be wrapped in `<div className="markdown-content">` for proper spacing. This class is defined globally in `index.css`.
 
 ### Model Configuration
-Models are configured by presets in `backend/config.py`. `latest` is the default concise four-provider slate; `expanded` includes newer fast/lite/coding variants. `COUNCIL_MODELS` can override the exact comma-separated model IDs, and `CHAIRMAN_MODEL` can override the synthesizer.
+Models are hardcoded in `backend/config.py`. Chairman can be same or different from council members. The current default is Gemini as chairman per user preference.
 
 ## Common Gotchas
 
 1. **Module Import Errors**: Always run backend as `python -m backend.main` from project root, not from backend directory
 2. **CORS Issues**: Frontend must match allowed origins in `main.py` CORS middleware
 3. **Ranking Parse Failures**: If models don't follow format, fallback regex extracts any "Response X" patterns in order
-4. **Older Conversations**: Conversations saved before metadata persistence may not have `metadata`, so the frontend must tolerate missing mappings
+4. **Missing Metadata**: Metadata is ephemeral (not persisted), only available in API responses
 
 ## Future Enhancement Ideas
 
@@ -145,7 +143,7 @@ Models are configured by presets in `backend/config.py`. `latest` is the default
 
 ## Testing Notes
 
-Use `test_connectivity.py` to verify API connectivity and print the resolved council/chairman model IDs before adding new model identifiers.
+Use `test_openrouter.py` to verify API connectivity and test different model identifiers before adding to council. The script tests both streaming and non-streaming modes.
 
 ## Data Flow Summary
 
@@ -154,7 +152,7 @@ User Query
     ↓
 Stage 1: Parallel queries → [individual responses]
     ↓
-Stage 2: Anonymize → Parallel peer-only ranking queries → [evaluations + parsed rankings]
+Stage 2: Anonymize → Parallel ranking queries → [evaluations + parsed rankings]
     ↓
 Aggregate Rankings Calculation → [sorted by avg position]
     ↓
